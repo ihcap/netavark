@@ -168,6 +168,7 @@ impl driver::NetworkDriver for Vxlan<'_> {
             self.info.rootless,
             self.info.netns_host,
             self.info.netns_container,
+            self.info.netns_path,
         )?;
 
         // Create status block response
@@ -248,6 +249,7 @@ fn create_basic_interfaces(
     _rootless: bool,
     _hostns_fd: BorrowedFd<'_>,
     _netns_fd: BorrowedFd<'_>,
+    netns_path: &str,
 ) -> NetavarkResult<String> {
     log::debug!("Creating VXLAN interfaces for network: {}", data.vxlan_interface_name);
     
@@ -445,11 +447,14 @@ fn create_basic_interfaces(
         return Err(NetavarkError::msg(format!("Failed to create veth pair: {}", stderr)));
     }
     
-    // Move container veth to container namespace (using temp name)
+    // Move container veth to target container namespace using PID parsed from netns_path
+    let target_pid = extract_pid_from_netns_path(netns_path)
+        .ok_or_else(|| NetavarkError::msg("failed to parse target netns PID"))?;
+
     let mut cmd = std::process::Command::new("ip");
     cmd.args([
         "link", "set", "dev", &temp_container_name,
-        "netns", "/proc/self/ns/net"
+        "netns", &target_pid
     ]);
     
     let output = cmd.output()
@@ -461,9 +466,9 @@ fn create_basic_interfaces(
     }
     
     // Rename the container veth to the desired name within the container namespace
-    let mut cmd = std::process::Command::new("ip");
+    let mut cmd = std::process::Command::new("nsenter");
     cmd.args([
-        "netns", "exec", "/proc/self/ns/net", "ip", "link", "set", "dev", &temp_container_name, "name", &data.container_interface_name
+        "-t", &target_pid, "-n", "ip", "link", "set", "dev", &temp_container_name, "name", &data.container_interface_name
     ]);
     
     let output = cmd.output()
@@ -504,9 +509,9 @@ fn create_basic_interfaces(
     // Configure container interface using system commands
     log::debug!("Configuring container interface: {}", data.container_interface_name);
     
-    // Get MAC address using ip command
-    let mut cmd = std::process::Command::new("ip");
-    cmd.args(["link", "show", &data.container_interface_name]);
+    // Get MAC address using ip command inside container namespace
+    let mut cmd = std::process::Command::new("nsenter");
+    cmd.args(["-t", &target_pid, "-n", "ip", "link", "show", &data.container_interface_name]);
     
     let output = cmd.output()
         .map_err(|e| NetavarkError::msg(format!("Failed to get container interface info: {}", e)))?;
@@ -524,8 +529,8 @@ fn create_basic_interfaces(
     
     // Configure container interface IP addresses
     for addr in &data.ipam.container_addresses {
-        let mut cmd = std::process::Command::new("ip");
-        cmd.args(["addr", "add", &addr.to_string(), "dev", &data.container_interface_name]);
+        let mut cmd = std::process::Command::new("nsenter");
+        cmd.args(["-t", &target_pid, "-n", "ip", "addr", "add", &addr.to_string(), "dev", &data.container_interface_name]);
         
         let output = cmd.output()
             .map_err(|e| NetavarkError::msg(format!("Failed to add IP to container interface: {}", e)))?;
@@ -537,8 +542,8 @@ fn create_basic_interfaces(
     }
     
     // Bring container interface up
-    let mut cmd = std::process::Command::new("ip");
-    cmd.args(["link", "set", "dev", &data.container_interface_name, "up"]);
+    let mut cmd = std::process::Command::new("nsenter");
+    cmd.args(["-t", &target_pid, "-n", "ip", "link", "set", "dev", &data.container_interface_name, "up"]);
     
     let output = cmd.output()
         .map_err(|e| NetavarkError::msg(format!("Failed to bring container interface up: {}", e)))?;
@@ -551,8 +556,12 @@ fn create_basic_interfaces(
     // Add default routes using system commands
     if !internal && !data.no_default_route {
         for gateway in &data.ipam.gateway_addresses {
-            let mut cmd = std::process::Command::new("ip");
-            cmd.args(["route", "add", "default", "via", &gateway.to_string()]);
+            // Ensure gateway string has no CIDR suffix
+            let gw_str = gateway.to_string();
+            let gw_no_cidr = gw_str.split('/').next().unwrap_or(&gw_str);
+
+            let mut cmd = std::process::Command::new("nsenter");
+            cmd.args(["-t", &target_pid, "-n", "ip", "route", "add", "default", "via", gw_no_cidr]);
             
             if let Some(metric) = data.metric {
                 cmd.args(["metric", &metric.to_string()]);
@@ -583,6 +592,21 @@ fn extract_mac_from_ip_output(output: &str) -> Option<String> {
                 }
             }
         }
+    }
+    None
+}
+
+// Extract PID from typical netns path formats used by podman/netavark
+// Examples:
+//  - /proc/<pid>/ns/net
+//  - /proc/self/ns/net -> we cannot resolve self here reliably; caller should pass resolved pid
+fn extract_pid_from_netns_path(path: &str) -> Option<String> {
+    // Expect /proc/<pid>/ns/net
+    let parts: Vec<&str> = path.split('/').collect();
+    let pid_part = parts.get(2)?; // index 0:"", 1:"proc", 2:"<pid>"
+    // If it's a number, return it
+    if pid_part.chars().all(|c| c.is_ascii_digit()) {
+        return Some(pid_part.to_string());
     }
     None
 }
