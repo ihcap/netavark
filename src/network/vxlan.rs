@@ -387,12 +387,32 @@ fn create_basic_interfaces(
     // Remove host veth if it exists
     let mut cmd = std::process::Command::new("ip");
     cmd.args(["link", "del", "dev", &data.host_interface_name]);
-    let _ = cmd.output(); // Ignore errors, interface might not exist
+    let output = cmd.output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            log::debug!("Removed existing host veth: {}", data.host_interface_name);
+        }
+    }
     
-    // Remove container veth if it exists (in host namespace)
+    // Try to remove container veth from host namespace (in case it exists there)
     let mut cmd = std::process::Command::new("ip");
     cmd.args(["link", "del", "dev", &data.container_interface_name]);
-    let _ = cmd.output(); // Ignore errors, interface might not exist
+    let output = cmd.output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            log::debug!("Removed existing container veth from host namespace: {}", data.container_interface_name);
+        }
+    }
+    
+    // Also try to remove container veth from container namespace
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["netns", "exec", "/proc/self/ns/net", "ip", "link", "del", "dev", &data.container_interface_name]);
+    let output = cmd.output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            log::debug!("Removed existing container veth from container namespace: {}", data.container_interface_name);
+        }
+    }
     
     // Create veth pair
     let mut cmd = std::process::Command::new("ip");
