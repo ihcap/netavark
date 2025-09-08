@@ -118,7 +118,7 @@ impl driver::NetworkDriver for Vxlan<'_> {
 
         // Generate interface names
         let vxlan_interface_name = format!("vxlan-{}", self.info.network.name);
-        let bridge_interface_name = format!("br-vxlan-{}", self.info.network.name);
+        let bridge_interface_name = format!("brvx-{}", self.info.network.name);
 
         self.data = Some(VxlanInternalData {
             vni,
@@ -543,7 +543,7 @@ mod tests {
             internal: false,
             ipv6_enabled: false,
             name: "test-vxlan".to_string(),
-            network_interface: Some("br-vxlan-test".to_string()),
+            network_interface: Some("brvx-test".to_string()),
             options: Some(options),
             ipam_options: None,
             subnets: Some(vec![Subnet {
