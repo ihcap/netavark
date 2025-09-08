@@ -27,16 +27,21 @@ struct VxlanInternalData {
     /// VXLAN Network Identifier
     vni: u32,
     /// Local IP address for VXLAN
+    #[allow(dead_code)]
     local_ip: IpAddr,
     /// Remote IP addresses for VXLAN
+    #[allow(dead_code)]
     remote_ips: Vec<IpAddr>,
     /// Physical interface to use for VXLAN
+    #[allow(dead_code)]
     physical_interface: String,
     /// VXLAN port (default 4789)
+    #[allow(dead_code)]
     vxlan_port: u16,
     /// Bridge interface name
     bridge_interface_name: String,
     /// VXLAN interface name
+    #[allow(dead_code)]
     vxlan_interface_name: String,
     /// Container interface name
     container_interface_name: String,
