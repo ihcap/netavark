@@ -151,7 +151,7 @@ impl driver::NetworkDriver for Vxlan<'_> {
         log::debug!("VNI: {}, Local IP: {}, Remote IPs: {:?}", 
                    data.vni, data.local_ip, data.remote_ips);
 
-        let (_host_sock, netns_sock) = netlink_sockets;
+        let (host_sock, netns_sock) = netlink_sockets;
 
         // For now, we'll implement a basic setup that creates the bridge
         // and veth pair, but skip VXLAN interface creation until we have
@@ -227,7 +227,7 @@ fn create_basic_interfaces(
     host: &mut netlink::Socket,
     netns: &mut netlink::Socket,
     data: &VxlanInternalData,
-    _internal: bool,
+    internal: bool,
     _rootless: bool,
     _hostns_fd: BorrowedFd<'_>,
     netns_fd: BorrowedFd<'_>,
