@@ -114,7 +114,10 @@ impl driver::NetworkDriver for Vxlan<'_> {
             &self.info.per_network_opts.options,
             OPTION_HOST_INTERFACE_NAME,
         )?
-        .unwrap_or_else(|| "".to_string());
+        .unwrap_or_else(|| {
+            // Generate a default host interface name based on container interface name
+            format!("veth-{}", &self.info.per_network_opts.interface_name)
+        });
 
         // Generate interface names
         let vxlan_interface_name = format!("vx{}", self.info.network.name);
