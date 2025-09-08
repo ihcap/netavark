@@ -8,7 +8,7 @@ use crate::{
             DEFAULT_VXLAN_PORT, OPTION_LOCAL_IP, OPTION_PHYSICAL_INTERFACE, OPTION_REMOTE_IPS,
             OPTION_VNI, OPTION_VXLAN_PORT,
         },
-        core_utils::{get_ipam_addresses, parse_option, CoreUtils},
+        core_utils::{get_ipam_addresses, parse_option},
         driver::{self, DriverInfo},
         internal_types::IPAMAddresses,
         netlink,
@@ -45,6 +45,7 @@ struct VxlanInternalData {
     /// IPAM addresses
     ipam: IPAMAddresses,
     /// MTU for interfaces
+    #[allow(dead_code)]
     mtu: u32,
     /// Route metric
     metric: Option<u32>,
@@ -237,13 +238,13 @@ fn get_interface_name(name: Option<String>) -> NetavarkResult<String> {
 }
 
 fn create_basic_interfaces(
-    host: &mut netlink::Socket,
-    netns: &mut netlink::Socket,
+    _host: &mut netlink::Socket,
+    _netns: &mut netlink::Socket,
     data: &VxlanInternalData,
     internal: bool,
     _rootless: bool,
     _hostns_fd: BorrowedFd<'_>,
-    netns_fd: BorrowedFd<'_>,
+    _netns_fd: BorrowedFd<'_>,
 ) -> NetavarkResult<String> {
     log::debug!("Creating VXLAN interfaces for network: {}", data.vxlan_interface_name);
     
