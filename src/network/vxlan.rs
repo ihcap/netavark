@@ -428,11 +428,13 @@ fn create_basic_interfaces(
         }
     }
     
-    // Create veth pair
+    // Create veth pair with temporary names first, then rename
+    let temp_container_name = format!("{}_tmp", data.container_interface_name);
+    
     let mut cmd = std::process::Command::new("ip");
     cmd.args([
         "link", "add", "name", &data.host_interface_name,
-        "type", "veth", "peer", "name", &data.container_interface_name
+        "type", "veth", "peer", "name", &temp_container_name
     ]);
     
     let output = cmd.output()
@@ -443,10 +445,10 @@ fn create_basic_interfaces(
         return Err(NetavarkError::msg(format!("Failed to create veth pair: {}", stderr)));
     }
     
-    // Move container veth to container namespace
+    // Move container veth to container namespace (using temp name)
     let mut cmd = std::process::Command::new("ip");
     cmd.args([
-        "link", "set", "dev", &data.container_interface_name,
+        "link", "set", "dev", &temp_container_name,
         "netns", "/proc/self/ns/net"
     ]);
     
@@ -456,6 +458,20 @@ fn create_basic_interfaces(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(NetavarkError::msg(format!("Failed to move veth to container namespace: {}", stderr)));
+    }
+    
+    // Rename the container veth to the desired name within the container namespace
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args([
+        "netns", "exec", "/proc/self/ns/net", "ip", "link", "set", "dev", &temp_container_name, "name", &data.container_interface_name
+    ]);
+    
+    let output = cmd.output()
+        .map_err(|e| NetavarkError::msg(format!("Failed to rename container veth: {}", e)))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!("Failed to rename container veth (may already have correct name): {}", stderr);
     }
     
     // Connect host veth to bridge
