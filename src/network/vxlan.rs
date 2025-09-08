@@ -302,13 +302,19 @@ fn create_basic_interfaces(
                 cmd.args(["remote", &remote_ip.to_string()]);
             }
             
+            log::debug!("Executing VXLAN creation command: {:?}", cmd);
+            
             let output = cmd.output()
                 .map_err(|e| NetavarkError::msg(format!("Failed to execute ip command: {}", e)))?;
             
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                log::error!("VXLAN creation failed - stderr: {}, stdout: {}", stderr, stdout);
                 return Err(NetavarkError::msg(format!("Failed to create VXLAN interface: {}", stderr)));
             }
+            
+            log::debug!("VXLAN interface {} created successfully", data.vxlan_interface_name);
             
             // Get the created VXLAN interface
             let vxlan = host.get_link(netlink::LinkID::Name(data.vxlan_interface_name.clone()))?;
