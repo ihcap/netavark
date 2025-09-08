@@ -27,21 +27,16 @@ struct VxlanInternalData {
     /// VXLAN Network Identifier
     vni: u32,
     /// Local IP address for VXLAN
-    #[allow(dead_code)]
     local_ip: IpAddr,
     /// Remote IP addresses for VXLAN
-    #[allow(dead_code)]
     remote_ips: Vec<IpAddr>,
     /// Physical interface to use for VXLAN
-    #[allow(dead_code)]
     physical_interface: String,
     /// VXLAN port (default 4789)
-    #[allow(dead_code)]
     vxlan_port: u16,
     /// Bridge interface name
     bridge_interface_name: String,
     /// VXLAN interface name
-    #[allow(dead_code)]
     vxlan_interface_name: String,
     /// Container interface name
     container_interface_name: String,
@@ -201,15 +196,28 @@ impl driver::NetworkDriver for Vxlan<'_> {
             None => return Err(NetavarkError::msg("must call validate() before teardown()")),
         };
 
-        let (_host_sock, netns_sock) = netlink_sockets;
+        let (host_sock, netns_sock) = netlink_sockets;
+
+        log::debug!("Teardown VXLAN network {}", self.info.network.name);
 
         // Remove container veth
         netns_sock
             .del_link(netlink::LinkID::Name(data.container_interface_name.clone()))
             .wrap("failed to delete container veth")?;
 
-        // TODO: Remove VXLAN interface and bridge if no more containers
-        // For now, we'll leave the bridge and VXLAN interface in place
+        // Remove host veth
+        host_sock
+            .del_link(netlink::LinkID::Name(data.host_interface_name.clone()))
+            .wrap("failed to delete host veth")?;
+
+        // TODO: Implement proper cleanup logic to check if other containers are using the VXLAN
+        // For now, we'll leave the bridge and VXLAN interface in place to avoid breaking other containers
+        // In a production implementation, you would:
+        // 1. Check if any other containers are using this VXLAN network
+        // 2. Only remove the VXLAN interface and bridge if no containers are using them
+        // 3. Use reference counting or similar mechanism
+
+        log::debug!("VXLAN network {} teardown completed", self.info.network.name);
 
         Ok(())
     }
@@ -237,8 +245,12 @@ fn create_basic_interfaces(
     _hostns_fd: BorrowedFd<'_>,
     netns_fd: BorrowedFd<'_>,
 ) -> NetavarkResult<String> {
-    // For Phase 1, we'll create a basic bridge and veth setup
-    // without the VXLAN interface (that will come in later phases)
+    log::debug!("Creating VXLAN interfaces for network: {}", data.vxlan_interface_name);
+    
+    // Get the physical interface index
+    let physical_if = host.get_link(netlink::LinkID::Name(data.physical_interface.clone()))
+        .map_err(|_| NetavarkError::msg(format!("Physical interface {} not found", data.physical_interface)))?;
+    let physical_if_index = physical_if.header.index;
     
     // Create or get bridge
     let bridge_index = match host.get_link(netlink::LinkID::Name(data.bridge_interface_name.clone())) {
@@ -256,6 +268,60 @@ fn create_basic_interfaces(
             bridge.header.index
         }
     };
+
+    // Create VXLAN interface
+    let vxlan_index = match host.get_link(netlink::LinkID::Name(data.vxlan_interface_name.clone())) {
+        Ok(vxlan) => vxlan.header.index,
+        Err(_) => {
+            // Create VXLAN interface using system command for now
+            // TODO: Implement proper netlink VXLAN creation
+            log::debug!("Creating VXLAN interface: {}", data.vxlan_interface_name);
+            
+            // Use ip command to create VXLAN interface
+            let mut cmd = std::process::Command::new("ip");
+            cmd.args([
+                "link", "add", "dev", &data.vxlan_interface_name,
+                "type", "vxlan",
+                "id", &data.vni.to_string(),
+                "local", &data.local_ip.to_string(),
+                "dstport", &data.vxlan_port.to_string(),
+                "dev", &data.physical_interface
+            ]);
+            
+            // Add remote IPs
+            for remote_ip in &data.remote_ips {
+                cmd.args(["remote", &remote_ip.to_string()]);
+            }
+            
+            let output = cmd.output()
+                .map_err(|e| NetavarkError::msg(format!("Failed to execute ip command: {}", e)))?;
+            
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(NetavarkError::msg(format!("Failed to create VXLAN interface: {}", stderr)));
+            }
+            
+            // Get the created VXLAN interface
+            let vxlan = host.get_link(netlink::LinkID::Name(data.vxlan_interface_name.clone()))?;
+            host.set_up(netlink::LinkID::ID(vxlan.header.index))?;
+            vxlan.header.index
+        }
+    };
+
+    // Connect VXLAN to bridge
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args([
+        "link", "set", "dev", &data.vxlan_interface_name,
+        "master", &data.bridge_interface_name
+    ]);
+    
+    let output = cmd.output()
+        .map_err(|e| NetavarkError::msg(format!("Failed to connect VXLAN to bridge: {}", e)))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!("Failed to connect VXLAN to bridge (may already be connected): {}", stderr);
+    }
 
     // Create veth pair
     let mut peer_opts = netlink::CreateLinkOptions::new(
