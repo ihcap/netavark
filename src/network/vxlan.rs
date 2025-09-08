@@ -375,56 +375,150 @@ fn create_basic_interfaces(
         log::warn!("Failed to connect VXLAN to bridge (may already be connected): {}", stderr);
     }
 
+    // Create veth pair using system commands
+    log::debug!("Creating veth pair: {} <-> {}", data.host_interface_name, data.container_interface_name);
+    
     // Create veth pair
-    let mut peer_opts = netlink::CreateLinkOptions::new(
-        data.container_interface_name.clone(),
-        netlink_packet_route::link::InfoKind::Veth,
-    );
-    peer_opts.mtu = data.mtu;
-    peer_opts.netns = Some(netns_fd);
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args([
+        "link", "add", "name", &data.host_interface_name,
+        "type", "veth", "peer", "name", &data.container_interface_name
+    ]);
+    
+    let output = cmd.output()
+        .map_err(|e| NetavarkError::msg(format!("Failed to create veth pair: {}", e)))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(NetavarkError::msg(format!("Failed to create veth pair: {}", stderr)));
+    }
+    
+    // Move container veth to container namespace
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args([
+        "link", "set", "dev", &data.container_interface_name,
+        "netns", "/proc/self/ns/net"
+    ]);
+    
+    let output = cmd.output()
+        .map_err(|e| NetavarkError::msg(format!("Failed to move veth to container namespace: {}", e)))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(NetavarkError::msg(format!("Failed to move veth to container namespace: {}", stderr)));
+    }
+    
+    // Connect host veth to bridge
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args([
+        "link", "set", "dev", &data.host_interface_name,
+        "master", &data.bridge_interface_name
+    ]);
+    
+    let output = cmd.output()
+        .map_err(|e| NetavarkError::msg(format!("Failed to connect veth to bridge: {}", e)))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!("Failed to connect veth to bridge: {}", stderr);
+    }
+    
+    // Bring host veth up
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["link", "set", "dev", &data.host_interface_name, "up"]);
+    
+    let output = cmd.output()
+        .map_err(|e| NetavarkError::msg(format!("Failed to bring host veth up: {}", e)))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!("Failed to bring host veth up: {}", stderr);
+    }
 
-    let mut peer = netlink_packet_route::link::LinkMessage::default();
-    netlink::parse_create_link_options(&mut peer, peer_opts);
+    // Configure container interface using system commands
+    log::debug!("Configuring container interface: {}", data.container_interface_name);
+    
+    // Get MAC address using ip command
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["link", "show", &data.container_interface_name]);
+    
+    let output = cmd.output()
+        .map_err(|e| NetavarkError::msg(format!("Failed to get container interface info: {}", e)))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(NetavarkError::msg(format!("Failed to get container interface info: {}", stderr)));
+    }
+    
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let mac = extract_mac_from_ip_output(&output_str)
+        .ok_or_else(|| NetavarkError::msg("Failed to extract MAC address from ip output"))?;
+    
+    log::debug!("Container interface MAC: {}", mac);
+    
+    // Configure container interface IP addresses
+    for addr in &data.ipam.container_addresses {
+        let mut cmd = std::process::Command::new("ip");
+        cmd.args(["addr", "add", &addr.to_string(), "dev", &data.container_interface_name]);
+        
+        let output = cmd.output()
+            .map_err(|e| NetavarkError::msg(format!("Failed to add IP to container interface: {}", e)))?;
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::warn!("Failed to add IP {} to container interface: {}", addr, stderr);
+        }
+    }
+    
+    // Bring container interface up
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["link", "set", "dev", &data.container_interface_name, "up"]);
+    
+    let output = cmd.output()
+        .map_err(|e| NetavarkError::msg(format!("Failed to bring container interface up: {}", e)))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log::warn!("Failed to bring container interface up: {}", stderr);
+    }
 
-    let mut host_veth = netlink::CreateLinkOptions::new(
-        data.host_interface_name.clone(),
-        netlink_packet_route::link::InfoKind::Veth,
-    );
-    host_veth.mtu = data.mtu;
-    host_veth.primary_index = bridge_index;
-    host_veth.info_data = Some(netlink_packet_route::link::InfoData::Veth(
-        netlink_packet_route::link::InfoVeth::Peer(peer),
-    ));
-
-    host.create_link(host_veth)?;
-
-    let veth = netns.get_link(netlink::LinkID::Name(data.container_interface_name.clone()))?;
-
-    // Get MAC address
-    let mut mac = String::new();
-    for nla in veth.attributes.iter() {
-        if let netlink_packet_route::link::LinkAttribute::Address(ref addr) = nla {
-            mac = CoreUtils::encode_address_to_hex(addr);
-            break;
+    // Add default routes using system commands
+    if !internal && !data.no_default_route {
+        for gateway in &data.ipam.gateway_addresses {
+            let mut cmd = std::process::Command::new("ip");
+            cmd.args(["route", "add", "default", "via", &gateway.to_string()]);
+            
+            if let Some(metric) = data.metric {
+                cmd.args(["metric", &metric.to_string()]);
+            }
+            
+            let output = cmd.output()
+                .map_err(|e| NetavarkError::msg(format!("Failed to add default route: {}", e)))?;
+            
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                log::warn!("Failed to add default route via {}: {}", gateway, stderr);
+            }
         }
     }
 
-    if mac.is_empty() {
-        return Err(NetavarkError::msg("failed to get MAC address from container veth"));
-    }
-
-    // Configure container interface
-    for addr in &data.ipam.container_addresses {
-        netns.add_addr(veth.header.index, addr)?;
-    }
-
-    netns.set_up(netlink::LinkID::ID(veth.header.index))?;
-
-    if !internal && !data.no_default_route {
-        crate::network::core_utils::add_default_routes(netns, &data.ipam.gateway_addresses, data.metric)?;
-    }
-
     Ok(mac)
+}
+
+// Helper function to extract MAC address from ip link show output
+fn extract_mac_from_ip_output(output: &str) -> Option<String> {
+    for line in output.lines() {
+        if line.contains("link/ether") {
+            // Extract MAC address from line like: "    link/ether 00:11:22:33:44:55 brd ff:ff:ff:ff:ff:ff"
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            for (i, part) in parts.iter().enumerate() {
+                if part == &"link/ether" && i + 1 < parts.len() {
+                    return Some(parts[i + 1].to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
