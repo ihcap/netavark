@@ -117,7 +117,7 @@ impl driver::NetworkDriver for Vxlan<'_> {
         .unwrap_or_else(|| "".to_string());
 
         // Generate interface names
-        let vxlan_interface_name = format!("vxlan-{}", self.info.network.name);
+        let vxlan_interface_name = format!("vx{}", self.info.network.name);
         let bridge_interface_name = format!("brvx-{}", self.info.network.name);
 
         self.data = Some(VxlanInternalData {
