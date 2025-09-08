@@ -247,10 +247,19 @@ fn create_basic_interfaces(
 ) -> NetavarkResult<String> {
     log::debug!("Creating VXLAN interfaces for network: {}", data.vxlan_interface_name);
     
-    // Get the physical interface index
-    let physical_if = host.get_link(netlink::LinkID::Name(data.physical_interface.clone()))
-        .map_err(|_| NetavarkError::msg(format!("Physical interface {} not found", data.physical_interface)))?;
-    let _physical_if_index = physical_if.header.index;
+    // Validate physical interface exists using system command instead of netlink
+    // This avoids the netlink version compatibility issues
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["link", "show", &data.physical_interface]);
+    
+    let output = cmd.output()
+        .map_err(|e| NetavarkError::msg(format!("Failed to check physical interface: {}", e)))?;
+    
+    if !output.status.success() {
+        return Err(NetavarkError::msg(format!("Physical interface {} not found", data.physical_interface)));
+    }
+    
+    log::debug!("Physical interface {} validated", data.physical_interface);
     
     // Create or get bridge
     let bridge_index = match host.get_link(netlink::LinkID::Name(data.bridge_interface_name.clone())) {
