@@ -448,14 +448,25 @@ fn create_basic_interfaces(
     }
     
     // Move container veth to target container namespace using PID parsed from netns_path
+    log::debug!("Attempting to parse netns path: {}", netns_path);
     let target_pid = extract_pid_from_netns_path(netns_path)
-        .ok_or_else(|| NetavarkError::msg("failed to parse target netns PID"))?;
+        .ok_or_else(|| NetavarkError::msg(format!("failed to parse target netns PID from path: {}", netns_path)))?;
+    log::debug!("Extracted target PID: {}", target_pid);
 
     let mut cmd = std::process::Command::new("ip");
-    cmd.args([
-        "link", "set", "dev", &temp_container_name,
-        "netns", &target_pid
-    ]);
+    if target_pid.starts_with("/var/run/netns/") {
+        // Named namespace
+        cmd.args([
+            "link", "set", "dev", &temp_container_name,
+            "netns", &target_pid
+        ]);
+    } else {
+        // PID-based namespace
+        cmd.args([
+            "link", "set", "dev", &temp_container_name,
+            "netns", &target_pid
+        ]);
+    }
     
     let output = cmd.output()
         .map_err(|e| NetavarkError::msg(format!("Failed to move veth to container namespace: {}", e)))?;
@@ -466,10 +477,22 @@ fn create_basic_interfaces(
     }
     
     // Rename the container veth to the desired name within the container namespace
-    let mut cmd = std::process::Command::new("nsenter");
-    cmd.args([
-        "-t", &target_pid, "-n", "ip", "link", "set", "dev", &temp_container_name, "name", &data.container_interface_name
-    ]);
+    let mut cmd = if target_pid.starts_with("/var/run/netns/") {
+        // Named namespace - use ip netns exec
+        let mut cmd = std::process::Command::new("ip");
+        let namespace_name = target_pid.strip_prefix("/var/run/netns/").unwrap_or(&target_pid);
+        cmd.args([
+            "netns", "exec", namespace_name, "ip", "link", "set", "dev", &temp_container_name, "name", &data.container_interface_name
+        ]);
+        cmd
+    } else {
+        // PID-based namespace - use nsenter
+        let mut cmd = std::process::Command::new("nsenter");
+        cmd.args([
+            "-t", &target_pid, "-n", "ip", "link", "set", "dev", &temp_container_name, "name", &data.container_interface_name
+        ]);
+        cmd
+    };
     
     let output = cmd.output()
         .map_err(|e| NetavarkError::msg(format!("Failed to rename container veth: {}", e)))?;
@@ -510,8 +533,18 @@ fn create_basic_interfaces(
     log::debug!("Configuring container interface: {}", data.container_interface_name);
     
     // Get MAC address using ip command inside container namespace
-    let mut cmd = std::process::Command::new("nsenter");
-    cmd.args(["-t", &target_pid, "-n", "ip", "link", "show", &data.container_interface_name]);
+    let mut cmd = if target_pid.starts_with("/var/run/netns/") {
+        // Named namespace - use ip netns exec
+        let mut cmd = std::process::Command::new("ip");
+        let namespace_name = target_pid.strip_prefix("/var/run/netns/").unwrap_or(&target_pid);
+        cmd.args(["netns", "exec", namespace_name, "ip", "link", "show", &data.container_interface_name]);
+        cmd
+    } else {
+        // PID-based namespace - use nsenter
+        let mut cmd = std::process::Command::new("nsenter");
+        cmd.args(["-t", &target_pid, "-n", "ip", "link", "show", &data.container_interface_name]);
+        cmd
+    };
     
     let output = cmd.output()
         .map_err(|e| NetavarkError::msg(format!("Failed to get container interface info: {}", e)))?;
@@ -529,8 +562,18 @@ fn create_basic_interfaces(
     
     // Configure container interface IP addresses
     for addr in &data.ipam.container_addresses {
-        let mut cmd = std::process::Command::new("nsenter");
-        cmd.args(["-t", &target_pid, "-n", "ip", "addr", "add", &addr.to_string(), "dev", &data.container_interface_name]);
+        let mut cmd = if target_pid.starts_with("/var/run/netns/") {
+            // Named namespace - use ip netns exec
+            let mut cmd = std::process::Command::new("ip");
+            let namespace_name = target_pid.strip_prefix("/var/run/netns/").unwrap_or(&target_pid);
+            cmd.args(["netns", "exec", namespace_name, "ip", "addr", "add", &addr.to_string(), "dev", &data.container_interface_name]);
+            cmd
+        } else {
+            // PID-based namespace - use nsenter
+            let mut cmd = std::process::Command::new("nsenter");
+            cmd.args(["-t", &target_pid, "-n", "ip", "addr", "add", &addr.to_string(), "dev", &data.container_interface_name]);
+            cmd
+        };
         
         let output = cmd.output()
             .map_err(|e| NetavarkError::msg(format!("Failed to add IP to container interface: {}", e)))?;
@@ -542,8 +585,18 @@ fn create_basic_interfaces(
     }
     
     // Bring container interface up
-    let mut cmd = std::process::Command::new("nsenter");
-    cmd.args(["-t", &target_pid, "-n", "ip", "link", "set", "dev", &data.container_interface_name, "up"]);
+    let mut cmd = if target_pid.starts_with("/var/run/netns/") {
+        // Named namespace - use ip netns exec
+        let mut cmd = std::process::Command::new("ip");
+        let namespace_name = target_pid.strip_prefix("/var/run/netns/").unwrap_or(&target_pid);
+        cmd.args(["netns", "exec", namespace_name, "ip", "link", "set", "dev", &data.container_interface_name, "up"]);
+        cmd
+    } else {
+        // PID-based namespace - use nsenter
+        let mut cmd = std::process::Command::new("nsenter");
+        cmd.args(["-t", &target_pid, "-n", "ip", "link", "set", "dev", &data.container_interface_name, "up"]);
+        cmd
+    };
     
     let output = cmd.output()
         .map_err(|e| NetavarkError::msg(format!("Failed to bring container interface up: {}", e)))?;
@@ -560,8 +613,18 @@ fn create_basic_interfaces(
             let gw_str = gateway.to_string();
             let gw_no_cidr = gw_str.split('/').next().unwrap_or(&gw_str);
 
-            let mut cmd = std::process::Command::new("nsenter");
-            cmd.args(["-t", &target_pid, "-n", "ip", "route", "add", "default", "via", gw_no_cidr]);
+            let mut cmd = if target_pid.starts_with("/var/run/netns/") {
+                // Named namespace - use ip netns exec
+                let mut cmd = std::process::Command::new("ip");
+                let namespace_name = target_pid.strip_prefix("/var/run/netns/").unwrap_or(&target_pid);
+                cmd.args(["netns", "exec", namespace_name, "ip", "route", "add", "default", "via", gw_no_cidr]);
+                cmd
+            } else {
+                // PID-based namespace - use nsenter
+                let mut cmd = std::process::Command::new("nsenter");
+                cmd.args(["-t", &target_pid, "-n", "ip", "route", "add", "default", "via", gw_no_cidr]);
+                cmd
+            };
             
             if let Some(metric) = data.metric {
                 cmd.args(["metric", &metric.to_string()]);
@@ -599,15 +662,45 @@ fn extract_mac_from_ip_output(output: &str) -> Option<String> {
 // Extract PID from typical netns path formats used by podman/netavark
 // Examples:
 //  - /proc/<pid>/ns/net
-//  - /proc/self/ns/net -> we cannot resolve self here reliably; caller should pass resolved pid
+//  - /proc/self/ns/net -> resolve to actual PID
+//  - /var/run/netns/<name> -> handle named namespaces
 fn extract_pid_from_netns_path(path: &str) -> Option<String> {
-    // Expect /proc/<pid>/ns/net
-    let parts: Vec<&str> = path.split('/').collect();
-    let pid_part = parts.get(2)?; // index 0:"", 1:"proc", 2:"<pid>"
-    // If it's a number, return it
-    if pid_part.chars().all(|c| c.is_ascii_digit()) {
-        return Some(pid_part.to_string());
+    log::debug!("Parsing netns path: {}", path);
+    
+    // Handle /proc/self/ns/net by resolving to actual PID
+    if path == "/proc/self/ns/net" {
+        // Read /proc/self to get the actual PID
+        if let Ok(link) = std::fs::read_link("/proc/self") {
+            if let Some(pid_str) = link.to_str() {
+                log::debug!("Resolved /proc/self to PID: {}", pid_str);
+                return Some(pid_str.to_string());
+            }
+        }
+        log::debug!("Failed to resolve /proc/self");
+        return None;
     }
+    
+    // Handle /proc/<pid>/ns/net
+    if path.starts_with("/proc/") && path.ends_with("/ns/net") {
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() >= 4 {
+            let pid_part = parts[2]; // index 0:"", 1:"proc", 2:"<pid>"
+            // If it's a number, return it
+            if pid_part.chars().all(|c| c.is_ascii_digit()) {
+                log::debug!("Extracted PID from /proc/<pid>/ns/net: {}", pid_part);
+                return Some(pid_part.to_string());
+            }
+        }
+    }
+    
+    // Handle named namespaces like /var/run/netns/<name>
+    if path.starts_with("/var/run/netns/") {
+        log::debug!("Named namespace detected: {}", path);
+        // For named namespaces, we can use the path directly with ip netns
+        return Some(path.to_string());
+    }
+    
+    log::debug!("Could not parse netns path: {}", path);
     None
 }
 
