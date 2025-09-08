@@ -318,15 +318,14 @@ fn create_basic_interfaces(
         // Use ip command to create VXLAN interface
         let mut cmd = std::process::Command::new("ip");
         cmd.args([
-            "link", "add", "dev", &data.vxlan_interface_name,
+            "link", "add", "name", &data.vxlan_interface_name,
             "type", "vxlan",
             "id", &data.vni.to_string(),
             "local", &data.local_ip.to_string(),
-            "dstport", &data.vxlan_port.to_string(),
-            "dev", &data.physical_interface
+            "dstport", &data.vxlan_port.to_string()
         ]);
         
-        // Add remote IPs
+        // Add remote IPs (for unicast VXLAN)
         for remote_ip in &data.remote_ips {
             cmd.args(["remote", &remote_ip.to_string()]);
         }
