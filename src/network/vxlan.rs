@@ -384,33 +384,47 @@ fn create_basic_interfaces(
     // Clean up existing veth interfaces if they exist
     log::debug!("Cleaning up existing veth interfaces if they exist");
     
-    // Remove host veth if it exists
+    // Check what interfaces exist and log them
     let mut cmd = std::process::Command::new("ip");
-    cmd.args(["link", "del", "dev", &data.host_interface_name]);
+    cmd.args(["link", "show"]);
     let output = cmd.output();
     if let Ok(output) = output {
-        if output.status.success() {
-            log::debug!("Removed existing host veth: {}", data.host_interface_name);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        log::debug!("Existing interfaces: {}", stdout);
+    }
+    
+    // Try multiple cleanup strategies
+    let cleanup_commands = vec![
+        vec!["link", "del", "dev", &data.host_interface_name],
+        vec!["link", "del", "dev", &data.container_interface_name],
+        vec!["link", "del", &data.host_interface_name],
+        vec!["link", "del", &data.container_interface_name],
+    ];
+    
+    for cmd_args in cleanup_commands {
+        let mut cmd = std::process::Command::new("ip");
+        cmd.args(&cmd_args);
+        let output = cmd.output();
+        if let Ok(output) = output {
+            if output.status.success() {
+                log::debug!("Successfully removed interface with command: ip {}", cmd_args.join(" "));
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                log::debug!("Cleanup command failed (expected): ip {} - {}", cmd_args.join(" "), stderr);
+            }
         }
     }
     
-    // Try to remove container veth from host namespace (in case it exists there)
-    let mut cmd = std::process::Command::new("ip");
-    cmd.args(["link", "del", "dev", &data.container_interface_name]);
-    let output = cmd.output();
-    if let Ok(output) = output {
-        if output.status.success() {
-            log::debug!("Removed existing container veth from host namespace: {}", data.container_interface_name);
-        }
-    }
-    
-    // Also try to remove container veth from container namespace
+    // Also try to remove from container namespace
     let mut cmd = std::process::Command::new("ip");
     cmd.args(["netns", "exec", "/proc/self/ns/net", "ip", "link", "del", "dev", &data.container_interface_name]);
     let output = cmd.output();
     if let Ok(output) = output {
         if output.status.success() {
             log::debug!("Removed existing container veth from container namespace: {}", data.container_interface_name);
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::debug!("Container namespace cleanup failed (expected): {}", stderr);
         }
     }
     
