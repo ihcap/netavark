@@ -250,7 +250,7 @@ fn create_basic_interfaces(
     // Get the physical interface index
     let physical_if = host.get_link(netlink::LinkID::Name(data.physical_interface.clone()))
         .map_err(|_| NetavarkError::msg(format!("Physical interface {} not found", data.physical_interface)))?;
-    let physical_if_index = physical_if.header.index;
+    let _physical_if_index = physical_if.header.index;
     
     // Create or get bridge
     let bridge_index = match host.get_link(netlink::LinkID::Name(data.bridge_interface_name.clone())) {
@@ -270,7 +270,7 @@ fn create_basic_interfaces(
     };
 
     // Create VXLAN interface
-    let vxlan_index = match host.get_link(netlink::LinkID::Name(data.vxlan_interface_name.clone())) {
+    let _vxlan_index = match host.get_link(netlink::LinkID::Name(data.vxlan_interface_name.clone())) {
         Ok(vxlan) => vxlan.header.index,
         Err(_) => {
             // Create VXLAN interface using system command for now
