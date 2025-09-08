@@ -381,6 +381,19 @@ fn create_basic_interfaces(
     // Create veth pair using system commands
     log::debug!("Creating veth pair: {} <-> {}", data.host_interface_name, data.container_interface_name);
     
+    // Clean up existing veth interfaces if they exist
+    log::debug!("Cleaning up existing veth interfaces if they exist");
+    
+    // Remove host veth if it exists
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["link", "del", "dev", &data.host_interface_name]);
+    let _ = cmd.output(); // Ignore errors, interface might not exist
+    
+    // Remove container veth if it exists (in host namespace)
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["link", "del", "dev", &data.container_interface_name]);
+    let _ = cmd.output(); // Ignore errors, interface might not exist
+    
     // Create veth pair
     let mut cmd = std::process::Command::new("ip");
     cmd.args([
