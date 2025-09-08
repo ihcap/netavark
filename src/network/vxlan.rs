@@ -3,7 +3,6 @@ use std::{collections::HashMap, net::IpAddr, os::fd::BorrowedFd};
 use crate::{
     dns::aardvark::AardvarkEntry,
     error::{ErrorWrap, NetavarkError, NetavarkResult},
-    exec_netns,
     network::{
         constants::{
             DEFAULT_VXLAN_PORT, OPTION_LOCAL_IP, OPTION_PHYSICAL_INTERFACE, OPTION_REMOTE_IPS,
@@ -12,20 +11,18 @@ use crate::{
         core_utils::{get_ipam_addresses, parse_option, CoreUtils},
         driver::{self, DriverInfo},
         internal_types::IPAMAddresses,
-        netlink, sysctl,
+        netlink,
         types::StatusBlock,
     },
 };
 
 use super::{
     constants::{OPTION_HOST_INTERFACE_NAME, OPTION_METRIC, OPTION_MTU, OPTION_NO_DEFAULT_ROUTE},
-    core_utils::get_default_route_interface,
 };
 
 const NO_BRIDGE_NAME_ERROR: &str = "no bridge interface name given";
 const NO_CONTAINER_INTERFACE_ERROR: &str = "no container interface name given";
 
-#[derive(Clone, Debug)]
 struct VxlanInternalData {
     /// VXLAN Network Identifier
     vni: u32,
@@ -72,7 +69,7 @@ impl driver::NetworkDriver for Vxlan<'_> {
     }
 
     fn validate(&mut self) -> NetavarkResult<()> {
-        let bridge_name = get_interface_name(self.info.network.network_interface.clone())?;
+        let _bridge_name = get_interface_name(self.info.network.network_interface.clone())?;
         
         if self.info.per_network_opts.interface_name.is_empty() {
             return Err(NetavarkError::msg(NO_CONTAINER_INTERFACE_ERROR));
@@ -154,7 +151,7 @@ impl driver::NetworkDriver for Vxlan<'_> {
         log::debug!("VNI: {}, Local IP: {}, Remote IPs: {:?}", 
                    data.vni, data.local_ip, data.remote_ips);
 
-        let (host_sock, netns_sock) = netlink_sockets;
+        let (_host_sock, netns_sock) = netlink_sockets;
 
         // For now, we'll implement a basic setup that creates the bridge
         // and veth pair, but skip VXLAN interface creation until we have
@@ -199,7 +196,7 @@ impl driver::NetworkDriver for Vxlan<'_> {
             None => return Err(NetavarkError::msg("must call validate() before teardown()")),
         };
 
-        let (host_sock, netns_sock) = netlink_sockets;
+        let (_host_sock, netns_sock) = netlink_sockets;
 
         // Remove container veth
         netns_sock
@@ -230,9 +227,9 @@ fn create_basic_interfaces(
     host: &mut netlink::Socket,
     netns: &mut netlink::Socket,
     data: &VxlanInternalData,
-    internal: bool,
-    rootless: bool,
-    hostns_fd: BorrowedFd<'_>,
+    _internal: bool,
+    _rootless: bool,
+    _hostns_fd: BorrowedFd<'_>,
     netns_fd: BorrowedFd<'_>,
 ) -> NetavarkResult<String> {
     // For Phase 1, we'll create a basic bridge and veth setup
@@ -243,7 +240,7 @@ fn create_basic_interfaces(
         Ok(bridge) => bridge.header.index,
         Err(_) => {
             // Create bridge
-            let mut opts = netlink::CreateLinkOptions::new(
+            let opts = netlink::CreateLinkOptions::new(
                 data.bridge_interface_name.clone(),
                 netlink_packet_route::link::InfoKind::Bridge,
             );
