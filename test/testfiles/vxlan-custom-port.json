@@ -1,0 +1,21 @@
+{
+    "name": "vxlan-custom",
+    "driver": "vxlan",
+    "network_interface": "br-vxlan-custom",
+    "options": {
+        "vni": "300",
+        "local_ip": "192.168.1.30",
+        "remote_ips": "192.168.1.31",
+        "physical_interface": "eth1",
+        "vxlan_port": "8472"
+    },
+    "subnets": [
+        {
+            "subnet": "192.168.100.0/24",
+            "gateway": "192.168.100.1"
+        }
+    ],
+    "dns_enabled": true,
+    "internal": false,
+    "ipv6_enabled": false
+}

@@ -39,6 +39,9 @@ netavark -f /run/podman/828b0508ae64.conf teardown /run/podman/netns/828b0508ae6
  
 ## SEE ALSO
 podman(1)
+
+## ADDITIONAL DOCUMENTATION
+- VXLAN Driver: See docs/vxlan-driver.md for detailed VXLAN networking configuration
  
 ## HISTORY
 September 2021, Originally compiled by Matt Heon <mheon@redhat.com>

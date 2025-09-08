@@ -12,6 +12,7 @@ use super::{
     plugin::PluginDriver,
     types::{Network, PerNetworkOptions, PortMapping, StatusBlock},
     vlan::Vlan,
+    vxlan::Vxlan,
 };
 use std::os::unix::fs::PermissionsExt;
 
@@ -57,6 +58,7 @@ pub fn get_network_driver<'a>(
     match info.network.driver.as_str() {
         constants::DRIVER_BRIDGE => Ok(Box::new(Bridge::new(info))),
         constants::DRIVER_IPVLAN | constants::DRIVER_MACVLAN => Ok(Box::new(Vlan::new(info))),
+        constants::DRIVER_VXLAN => Ok(Box::new(Vxlan::new(info))),
 
         name => {
             if let Some(dirs) = plugins_directories {

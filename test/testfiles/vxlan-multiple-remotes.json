@@ -1,0 +1,21 @@
+{
+    "name": "vxlan-multi",
+    "driver": "vxlan",
+    "network_interface": "br-vxlan-multi",
+    "options": {
+        "vni": "200",
+        "local_ip": "192.168.1.20",
+        "remote_ips": "192.168.1.21,192.168.1.22,192.168.1.23",
+        "physical_interface": "ens3",
+        "vxlan_port": "4789"
+    },
+    "subnets": [
+        {
+            "subnet": "172.16.0.0/16",
+            "gateway": "172.16.0.1"
+        }
+    ],
+    "dns_enabled": false,
+    "internal": false,
+    "ipv6_enabled": false
+}

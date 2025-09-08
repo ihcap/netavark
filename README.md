@@ -8,12 +8,13 @@ for other OCI container management applications.
 
 Netavark is a tool for configuring networking for Linux containers. Its features include:
 * Configuration of container networks via JSON configuration file
-* Creation and management of required network interfaces, including MACVLAN networks
+* Creation and management of required network interfaces, including MACVLAN and VXLAN networks
 * All required firewall configuration to perform NAT and port forwarding as required for containers
 * Support for iptables, firewalld and nftables
 * Support for rootless containers
 * Support for IPv4 and IPv6
 * Support for container DNS resolution via the [aardvark-dns](https://github.com/containers/aardvark-dns) project
+* Multi-host container networking via VXLAN tunnels
 
 ## Requires
 

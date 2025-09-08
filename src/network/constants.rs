@@ -11,6 +11,7 @@ pub const IPAM_NONE: &str = "none";
 pub const DRIVER_BRIDGE: &str = "bridge";
 pub const DRIVER_IPVLAN: &str = "ipvlan";
 pub const DRIVER_MACVLAN: &str = "macvlan";
+pub const DRIVER_VXLAN: &str = "vxlan";
 
 pub const OPTION_ISOLATE: &str = "isolate";
 pub const ISOLATE_OPTION_TRUE: &str = "true";
@@ -25,8 +26,18 @@ pub const OPTION_VRF: &str = "vrf";
 pub const OPTION_VLAN: &str = "vlan";
 pub const OPTION_HOST_INTERFACE_NAME: &str = "host_interface_name";
 
+// VXLAN-specific options
+pub const OPTION_VNI: &str = "vni";
+pub const OPTION_LOCAL_IP: &str = "local_ip";
+pub const OPTION_REMOTE_IPS: &str = "remote_ips";
+pub const OPTION_PHYSICAL_INTERFACE: &str = "physical_interface";
+pub const OPTION_VXLAN_PORT: &str = "vxlan_port";
+
 /// 100 is the default metric for most Linux networking tools.
 pub const DEFAULT_METRIC: u32 = 100;
+
+// VXLAN defaults
+pub const DEFAULT_VXLAN_PORT: u16 = 4789;
 
 pub const NO_CONTAINER_INTERFACE_ERROR: &str = "no container interface name given";
 

@@ -1,0 +1,21 @@
+{
+    "name": "vxlan-network",
+    "driver": "vxlan",
+    "network_interface": "br-vxlan-network",
+    "options": {
+        "vni": "100",
+        "local_ip": "192.168.1.10",
+        "remote_ips": "192.168.1.11,192.168.1.12",
+        "physical_interface": "eth0",
+        "vxlan_port": "4789"
+    },
+    "subnets": [
+        {
+            "subnet": "10.0.0.0/24",
+            "gateway": "10.0.0.1"
+        }
+    ],
+    "dns_enabled": true,
+    "internal": false,
+    "ipv6_enabled": false
+}

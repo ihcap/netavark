@@ -20,6 +20,7 @@ pub mod netlink;
 pub mod plugin;
 pub mod sysctl;
 pub mod vlan;
+pub mod vxlan;
 
 impl types::NetworkOptions {
     pub fn load(path: Option<OsString>) -> NetavarkResult<types::NetworkOptions> {
