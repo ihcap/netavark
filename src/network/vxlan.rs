@@ -261,66 +261,103 @@ fn create_basic_interfaces(
     
     log::debug!("Physical interface {} validated", data.physical_interface);
     
-    // Create or get bridge
-    let bridge_index = match host.get_link(netlink::LinkID::Name(data.bridge_interface_name.clone())) {
-        Ok(bridge) => bridge.header.index,
-        Err(_) => {
-            // Create bridge
-            let opts = netlink::CreateLinkOptions::new(
-                data.bridge_interface_name.clone(),
-                netlink_packet_route::link::InfoKind::Bridge,
-            );
-            host.create_link(opts)?;
-            
-            let bridge = host.get_link(netlink::LinkID::Name(data.bridge_interface_name.clone()))?;
-            host.set_up(netlink::LinkID::ID(bridge.header.index))?;
-            bridge.header.index
+    // Create or get bridge using system commands to avoid netlink issues
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["link", "show", &data.bridge_interface_name]);
+    
+    let output = cmd.output()
+        .map_err(|e| NetavarkError::msg(format!("Failed to check bridge interface: {}", e)))?;
+    
+    if !output.status.success() {
+        // Create bridge using ip command
+        log::debug!("Creating bridge interface: {}", data.bridge_interface_name);
+        let mut cmd = std::process::Command::new("ip");
+        cmd.args(["link", "add", "name", &data.bridge_interface_name, "type", "bridge"]);
+        
+        let output = cmd.output()
+            .map_err(|e| NetavarkError::msg(format!("Failed to create bridge: {}", e)))?;
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(NetavarkError::msg(format!("Failed to create bridge interface: {}", stderr)));
         }
-    };
+        
+        // Bring bridge up
+        let mut cmd = std::process::Command::new("ip");
+        cmd.args(["link", "set", "dev", &data.bridge_interface_name, "up"]);
+        
+        let output = cmd.output()
+            .map_err(|e| NetavarkError::msg(format!("Failed to bring bridge up: {}", e)))?;
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::warn!("Failed to bring bridge up: {}", stderr);
+        }
+        
+        log::debug!("Bridge interface {} created and brought up", data.bridge_interface_name);
+    } else {
+        log::debug!("Bridge interface {} already exists", data.bridge_interface_name);
+    }
 
     // Create VXLAN interface
-    let _vxlan_index = match host.get_link(netlink::LinkID::Name(data.vxlan_interface_name.clone())) {
-        Ok(vxlan) => vxlan.header.index,
-        Err(_) => {
-            // Create VXLAN interface using system command for now
-            // TODO: Implement proper netlink VXLAN creation
-            log::debug!("Creating VXLAN interface: {}", data.vxlan_interface_name);
-            
-            // Use ip command to create VXLAN interface
-            let mut cmd = std::process::Command::new("ip");
-            cmd.args([
-                "link", "add", "dev", &data.vxlan_interface_name,
-                "type", "vxlan",
-                "id", &data.vni.to_string(),
-                "local", &data.local_ip.to_string(),
-                "dstport", &data.vxlan_port.to_string(),
-                "dev", &data.physical_interface
-            ]);
-            
-            // Add remote IPs
-            for remote_ip in &data.remote_ips {
-                cmd.args(["remote", &remote_ip.to_string()]);
-            }
-            
-            log::debug!("Executing VXLAN creation command: {:?}", cmd);
-            
-            let output = cmd.output()
-                .map_err(|e| NetavarkError::msg(format!("Failed to execute ip command: {}", e)))?;
-            
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                log::error!("VXLAN creation failed - stderr: {}, stdout: {}", stderr, stdout);
-                return Err(NetavarkError::msg(format!("Failed to create VXLAN interface: {}", stderr)));
-            }
-            
-            log::debug!("VXLAN interface {} created successfully", data.vxlan_interface_name);
-            
-            // Get the created VXLAN interface
-            let vxlan = host.get_link(netlink::LinkID::Name(data.vxlan_interface_name.clone()))?;
-            host.set_up(netlink::LinkID::ID(vxlan.header.index))?;
-            vxlan.header.index
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["link", "show", &data.vxlan_interface_name]);
+    
+    let output = cmd.output()
+        .map_err(|e| NetavarkError::msg(format!("Failed to check VXLAN interface: {}", e)))?;
+    
+    let _vxlan_index = if output.status.success() {
+        log::debug!("VXLAN interface {} already exists", data.vxlan_interface_name);
+        0 // Dummy index
+    } else {
+        // Create VXLAN interface using system command for now
+        // TODO: Implement proper netlink VXLAN creation
+        log::debug!("Creating VXLAN interface: {}", data.vxlan_interface_name);
+        
+        // Use ip command to create VXLAN interface
+        let mut cmd = std::process::Command::new("ip");
+        cmd.args([
+            "link", "add", "dev", &data.vxlan_interface_name,
+            "type", "vxlan",
+            "id", &data.vni.to_string(),
+            "local", &data.local_ip.to_string(),
+            "dstport", &data.vxlan_port.to_string(),
+            "dev", &data.physical_interface
+        ]);
+        
+        // Add remote IPs
+        for remote_ip in &data.remote_ips {
+            cmd.args(["remote", &remote_ip.to_string()]);
         }
+        
+        log::debug!("Executing VXLAN creation command: {:?}", cmd);
+        
+        let output = cmd.output()
+            .map_err(|e| NetavarkError::msg(format!("Failed to execute ip command: {}", e)))?;
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            log::error!("VXLAN creation failed - stderr: {}, stdout: {}", stderr, stdout);
+            return Err(NetavarkError::msg(format!("Failed to create VXLAN interface: {}", stderr)));
+        }
+        
+        log::debug!("VXLAN interface {} created successfully", data.vxlan_interface_name);
+        
+        // Bring VXLAN interface up using ip command
+        let mut cmd = std::process::Command::new("ip");
+        cmd.args(["link", "set", "dev", &data.vxlan_interface_name, "up"]);
+        
+        let output = cmd.output()
+            .map_err(|e| NetavarkError::msg(format!("Failed to bring VXLAN up: {}", e)))?;
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::warn!("Failed to bring VXLAN up: {}", stderr);
+        }
+        
+        // Return a dummy index since we're not using netlink anymore
+        0
     };
 
     // Connect VXLAN to bridge
