@@ -142,7 +142,7 @@ impl<'a> Vxlan<'a> {
         let (sn, spf) = self.get_firewall_conf(
             &data.ipam.container_addresses,
             &data.ipam.nameservers,
-            IsolateOption::False, // VXLAN networks are typically not isolated
+            IsolateOption::Never, // VXLAN networks are typically not isolated
             data.bridge_interface_name.clone(),
         )?;
 
@@ -197,12 +197,28 @@ impl<'a> Vxlan<'a> {
             }
         }
 
-        let tn = TearDownNetwork {
+        // Create the setup network config for teardown
+        let sn = SetupNetwork {
+            subnets: self
+                .info
+                .network
+                .subnets
+                .as_ref()
+                .map(|nets| nets.iter().map(|n| n.subnet).collect()),
+            bridge_name: data.bridge_interface_name.clone(),
             network_id: self.info.network.id.clone(),
             network_hash_name: id_network_hash.clone(),
+            isolation: IsolateOption::Never,
+            dns_port: self.info.dns_port,
         };
 
-        let tpf = TeardownPortForward {
+        let tn = TearDownNetwork {
+            config: sn,
+            complete_teardown: true,
+        };
+
+        // Create the port forward config for teardown
+        let spf = PortForwardConfig {
             container_id: self.info.container_id.clone(),
             network_id: self.info.network.id.clone(),
             port_mappings: self.info.port_mappings,
@@ -213,6 +229,12 @@ impl<'a> Vxlan<'a> {
             container_ip_v6: addr_v6,
             subnet_v6: net_v6,
             dns_port: self.info.dns_port,
+            dns_server_ips: &data.ipam.nameservers,
+        };
+
+        let tpf = TeardownPortForward {
+            config: spf,
+            complete_teardown: true,
         };
 
         if !self.info.rootless {
@@ -220,15 +242,13 @@ impl<'a> Vxlan<'a> {
                 self.info.config_dir,
                 &self.info.network.id,
                 self.info.container_id,
-                self.info.firewall.driver_name(),
+                true, // complete_teardown
             )?;
         }
 
-        let system_dbus = zbus::blocking::Connection::system().ok();
+        self.info.firewall.teardown_network(tn)?;
 
-        self.info.firewall.teardown_network(tn, &system_dbus)?;
-
-        self.info.firewall.teardown_port_forward(tpf, &system_dbus)?;
+        self.info.firewall.teardown_port_forward(tpf)?;
         Ok(())
     }
 }
