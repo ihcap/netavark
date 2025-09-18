@@ -29,7 +29,6 @@ use super::{
     constants::{OPTION_HOST_INTERFACE_NAME, OPTION_METRIC, OPTION_MTU, OPTION_NO_DEFAULT_ROUTE},
 };
 
-const NO_BRIDGE_NAME_ERROR: &str = "no bridge interface name given";
 const NO_CONTAINER_INTERFACE_ERROR: &str = "no container interface name given";
 
 struct VxlanInternalData {
@@ -427,18 +426,6 @@ impl driver::NetworkDriver for Vxlan<'_> {
     }
 }
 
-fn get_interface_name(name: Option<String>) -> NetavarkResult<String> {
-    let name = match name {
-        None => return Err(NetavarkError::msg(NO_BRIDGE_NAME_ERROR)),
-        Some(n) => {
-            if n.is_empty() {
-                return Err(NetavarkError::msg(NO_BRIDGE_NAME_ERROR));
-            }
-            n
-        }
-    };
-    Ok(name)
-}
 
 fn create_basic_interfaces(
     _host: &mut netlink::Socket,
@@ -500,8 +487,53 @@ fn create_basic_interfaces(
         }
         
         log::debug!("Bridge interface {} created and brought up", data.bridge_interface_name);
+        
+        // Assign gateway IP addresses to the bridge
+        for gateway in &data.ipam.gateway_addresses {
+            let mut cmd = std::process::Command::new("ip");
+            cmd.args(["addr", "add", &gateway.to_string(), "dev", &data.bridge_interface_name]);
+            
+            let output = cmd.output()
+                .map_err(|e| NetavarkError::msg(format!("Failed to add gateway IP to bridge: {}", e)))?;
+            
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                log::warn!("Failed to add gateway IP {} to bridge: {}", gateway, stderr);
+            } else {
+                log::debug!("Added gateway IP {} to bridge {}", gateway, data.bridge_interface_name);
+            }
+        }
     } else {
         log::debug!("Bridge interface {} already exists", data.bridge_interface_name);
+        
+        // Check if bridge already has gateway IPs, if not add them
+        let mut cmd = std::process::Command::new("ip");
+        cmd.args(["addr", "show", &data.bridge_interface_name]);
+        
+        let output = cmd.output()
+            .map_err(|e| NetavarkError::msg(format!("Failed to check bridge IPs: {}", e)))?;
+        
+        if output.status.success() {
+            let output_str = String::from_utf8_lossy(&output.stdout);
+            for gateway in &data.ipam.gateway_addresses {
+                let gw_str = gateway.to_string();
+                if !output_str.contains(&gw_str) {
+                    // Gateway IP not found, add it
+                    let mut cmd = std::process::Command::new("ip");
+                    cmd.args(["addr", "add", &gw_str, "dev", &data.bridge_interface_name]);
+                    
+                    let output = cmd.output()
+                        .map_err(|e| NetavarkError::msg(format!("Failed to add gateway IP to existing bridge: {}", e)))?;
+                    
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        log::warn!("Failed to add gateway IP {} to existing bridge: {}", gateway, stderr);
+                    } else {
+                        log::debug!("Added gateway IP {} to existing bridge {}", gateway, data.bridge_interface_name);
+                    }
+                }
+            }
+        }
     }
 
     // Create VXLAN interface
