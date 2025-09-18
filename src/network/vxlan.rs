@@ -391,26 +391,57 @@ impl driver::NetworkDriver for Vxlan<'_> {
         &self,
         netlink_sockets: (&mut netlink::Socket, &mut netlink::Socket),
     ) -> NetavarkResult<()> {
-        let data = match &self.data {
-            Some(d) => d,
-            None => return Err(NetavarkError::msg("must call validate() before teardown()")),
-        };
-
         let (host_sock, netns_sock) = netlink_sockets;
 
         log::debug!("Teardown VXLAN network {}", self.info.network.name);
 
+        // Get interface names directly from network info (like bridge driver does)
+        let container_interface_name = &self.info.per_network_opts.interface_name;
+        let host_interface_name = parse_option(
+            &self.info.per_network_opts.options,
+            OPTION_HOST_INTERFACE_NAME,
+        )?
+        .unwrap_or_else(|| {
+            // Generate a default host interface name based on container interface name
+            format!("veth-{}", container_interface_name)
+        });
+
+        // Get IPAM addresses for firewall teardown
+        let ipam = get_ipam_addresses(self.info.per_network_opts, self.info.network)?;
+
+        // Create a minimal data structure for firewall teardown
+        let bridge_name = match &self.info.network.network_interface {
+            Some(name) if !name.is_empty() => name.clone(),
+            _ => format!("brvx-{}", self.info.network.name),
+        };
+
+        let temp_data = VxlanInternalData {
+            vni: 0, // Not needed for teardown
+            local_ip: "127.0.0.1".parse().unwrap(), // Not needed for teardown
+            remote_ips: Vec::new(), // Not needed for teardown
+            physical_interface: String::new(), // Not needed for teardown
+            vxlan_port: 4789, // Not needed for teardown
+            bridge_interface_name: bridge_name,
+            vxlan_interface_name: String::new(), // Not needed for teardown
+            container_interface_name: container_interface_name.clone(),
+            host_interface_name: host_interface_name.clone(),
+            ipam,
+            mtu: 0, // Not needed for teardown
+            metric: None, // Not needed for teardown
+            no_default_route: false, // Not needed for teardown
+        };
+
         // Teardown firewall rules for port forwarding
-        self.teardown_firewall(data)?;
+        self.teardown_firewall(&temp_data)?;
 
         // Remove container veth
         netns_sock
-            .del_link(netlink::LinkID::Name(data.container_interface_name.clone()))
+            .del_link(netlink::LinkID::Name(container_interface_name.clone()))
             .wrap("failed to delete container veth")?;
 
         // Remove host veth
         host_sock
-            .del_link(netlink::LinkID::Name(data.host_interface_name.clone()))
+            .del_link(netlink::LinkID::Name(host_interface_name.clone()))
             .wrap("failed to delete host veth")?;
 
         // TODO: Implement proper cleanup logic to check if other containers are using the VXLAN
