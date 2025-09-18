@@ -259,7 +259,11 @@ impl driver::NetworkDriver for Vxlan<'_> {
     }
 
     fn validate(&mut self) -> NetavarkResult<()> {
-        let _bridge_name = get_interface_name(self.info.network.network_interface.clone())?;
+        // Generate a default bridge interface name if none is provided
+        let bridge_name = match &self.info.network.network_interface {
+            Some(name) if !name.is_empty() => name.clone(),
+            _ => format!("brvx-{}", self.info.network.name),
+        };
         
         if self.info.per_network_opts.interface_name.is_empty() {
             return Err(NetavarkError::msg(NO_CONTAINER_INTERFACE_ERROR));
@@ -310,7 +314,7 @@ impl driver::NetworkDriver for Vxlan<'_> {
 
         // Generate interface names
         let vxlan_interface_name = format!("vx{}", self.info.network.name);
-        let bridge_interface_name = format!("brvx-{}", self.info.network.name);
+        let bridge_interface_name = bridge_name;
 
         self.data = Some(VxlanInternalData {
             vni,
