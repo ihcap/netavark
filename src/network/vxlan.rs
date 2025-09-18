@@ -1,16 +1,25 @@
 use std::{collections::HashMap, net::IpAddr, os::fd::BorrowedFd};
 
+use ipnet::IpNet;
+
 use crate::{
     dns::aardvark::AardvarkEntry,
     error::{ErrorWrap, NetavarkError, NetavarkResult},
+    firewall::{
+        iptables::MAX_HASH_SIZE,
+        state::{remove_fw_config, write_fw_config},
+    },
     network::{
         constants::{
             DEFAULT_VXLAN_PORT, OPTION_LOCAL_IP, OPTION_PHYSICAL_INTERFACE, OPTION_REMOTE_IPS,
             OPTION_VNI, OPTION_VXLAN_PORT,
         },
-        core_utils::{get_ipam_addresses, parse_option},
+        core_utils::{get_ipam_addresses, parse_option, CoreUtils},
         driver::{self, DriverInfo},
-        internal_types::IPAMAddresses,
+        internal_types::{
+            IPAMAddresses, IsolateOption, PortForwardConfig, SetupNetwork, TearDownNetwork,
+            TeardownPortForward,
+        },
         netlink,
         types::StatusBlock,
     },
@@ -61,6 +70,166 @@ pub struct Vxlan<'a> {
 impl<'a> Vxlan<'a> {
     pub fn new(info: DriverInfo<'a>) -> Self {
         Vxlan { info, data: None }
+    }
+
+    fn get_firewall_conf(
+        &'a self,
+        container_addresses: &Vec<IpNet>,
+        nameservers: &'a Vec<IpAddr>,
+        isolate: IsolateOption,
+        bridge_name: String,
+    ) -> NetavarkResult<(SetupNetwork, PortForwardConfig<'a>)> {
+        let id_network_hash =
+            CoreUtils::create_network_hash(&self.info.network.name, MAX_HASH_SIZE);
+        let sn = SetupNetwork {
+            subnets: self
+                .info
+                .network
+                .subnets
+                .as_ref()
+                .map(|nets| nets.iter().map(|n| n.subnet).collect()),
+            bridge_name,
+            network_id: self.info.network.id.clone(),
+            network_hash_name: id_network_hash.clone(),
+            isolation: isolate,
+            dns_port: self.info.dns_port,
+        };
+
+        let mut has_ipv4 = false;
+        let mut has_ipv6 = false;
+        let mut addr_v4: Option<IpAddr> = None;
+        let mut addr_v6: Option<IpAddr> = None;
+        let mut net_v4: Option<IpNet> = None;
+        let mut net_v6: Option<IpNet> = None;
+        for net in container_addresses {
+            match net {
+                IpNet::V4(v4) => {
+                    if has_ipv4 {
+                        continue;
+                    }
+                    addr_v4 = Some(IpAddr::V4(v4.addr()));
+                    net_v4 = Some(IpNet::new(v4.network().into(), v4.prefix_len())?);
+                    has_ipv4 = true;
+                }
+                IpNet::V6(v6) => {
+                    if has_ipv6 {
+                        continue;
+                    }
+
+                    addr_v6 = Some(IpAddr::V6(v6.addr()));
+                    net_v6 = Some(IpNet::new(v6.network().into(), v6.prefix_len())?);
+                    has_ipv6 = true;
+                }
+            }
+        }
+        let spf = PortForwardConfig {
+            container_id: self.info.container_id.clone(),
+            network_id: self.info.network.id.clone(),
+            port_mappings: self.info.port_mappings,
+            network_name: self.info.network.name.clone(),
+            network_hash_name: id_network_hash,
+            container_ip_v4: addr_v4,
+            subnet_v4: net_v4,
+            container_ip_v6: addr_v6,
+            subnet_v6: net_v6,
+            dns_port: self.info.dns_port,
+            dns_server_ips: nameservers,
+        };
+        Ok((sn, spf))
+    }
+
+    fn setup_firewall(&self, data: &VxlanInternalData) -> NetavarkResult<()> {
+        let (sn, spf) = self.get_firewall_conf(
+            &data.ipam.container_addresses,
+            &data.ipam.nameservers,
+            IsolateOption::False, // VXLAN networks are typically not isolated
+            data.bridge_interface_name.clone(),
+        )?;
+
+        if !self.info.rootless {
+            write_fw_config(
+                self.info.config_dir,
+                &self.info.network.id,
+                self.info.container_id,
+                self.info.firewall.driver_name(),
+                &sn,
+                &spf,
+            )?;
+        }
+
+        let system_dbus = zbus::blocking::Connection::system().ok();
+
+        self.info.firewall.setup_network(sn, &system_dbus)?;
+
+        self.info.firewall.setup_port_forward(spf, &system_dbus)?;
+        Ok(())
+    }
+
+    fn teardown_firewall(&self, data: &VxlanInternalData) -> NetavarkResult<()> {
+        let id_network_hash =
+            CoreUtils::create_network_hash(&self.info.network.name, MAX_HASH_SIZE);
+
+        let mut has_ipv4 = false;
+        let mut has_ipv6 = false;
+        let mut addr_v4: Option<IpAddr> = None;
+        let mut addr_v6: Option<IpAddr> = None;
+        let mut net_v4: Option<IpNet> = None;
+        let mut net_v6: Option<IpNet> = None;
+        for net in &data.ipam.container_addresses {
+            match net {
+                IpNet::V4(v4) => {
+                    if has_ipv4 {
+                        continue;
+                    }
+                    addr_v4 = Some(IpAddr::V4(v4.addr()));
+                    net_v4 = Some(IpNet::new(v4.network().into(), v4.prefix_len())?);
+                    has_ipv4 = true;
+                }
+                IpNet::V6(v6) => {
+                    if has_ipv6 {
+                        continue;
+                    }
+
+                    addr_v6 = Some(IpAddr::V6(v6.addr()));
+                    net_v6 = Some(IpNet::new(v6.network().into(), v6.prefix_len())?);
+                    has_ipv6 = true;
+                }
+            }
+        }
+
+        let tn = TearDownNetwork {
+            network_id: self.info.network.id.clone(),
+            network_hash_name: id_network_hash.clone(),
+        };
+
+        let tpf = TeardownPortForward {
+            container_id: self.info.container_id.clone(),
+            network_id: self.info.network.id.clone(),
+            port_mappings: self.info.port_mappings,
+            network_name: self.info.network.name.clone(),
+            network_hash_name: id_network_hash,
+            container_ip_v4: addr_v4,
+            subnet_v4: net_v4,
+            container_ip_v6: addr_v6,
+            subnet_v6: net_v6,
+            dns_port: self.info.dns_port,
+        };
+
+        if !self.info.rootless {
+            remove_fw_config(
+                self.info.config_dir,
+                &self.info.network.id,
+                self.info.container_id,
+                self.info.firewall.driver_name(),
+            )?;
+        }
+
+        let system_dbus = zbus::blocking::Connection::system().ok();
+
+        self.info.firewall.teardown_network(tn, &system_dbus)?;
+
+        self.info.firewall.teardown_port_forward(tpf, &system_dbus)?;
+        Ok(())
     }
 }
 
@@ -171,6 +340,9 @@ impl driver::NetworkDriver for Vxlan<'_> {
             self.info.netns_path,
         )?;
 
+        // Setup firewall rules for port forwarding
+        self.setup_firewall(data)?;
+
         // Create status block response
         let mut response = StatusBlock {
             dns_server_ips: Some(Vec::<IpAddr>::new()),
@@ -204,6 +376,9 @@ impl driver::NetworkDriver for Vxlan<'_> {
         let (host_sock, netns_sock) = netlink_sockets;
 
         log::debug!("Teardown VXLAN network {}", self.info.network.name);
+
+        // Teardown firewall rules for port forwarding
+        self.teardown_firewall(data)?;
 
         // Remove container veth
         netns_sock
@@ -331,9 +506,19 @@ fn create_basic_interfaces(
         ]);
         
         // Add remote IPs (for unicast VXLAN)
+        // For multiple hosts, we need to add each remote IP
         for remote_ip in &data.remote_ips {
             cmd.args(["remote", &remote_ip.to_string()]);
         }
+        
+        // TODO: Add support for multicast VXLAN for better scalability
+        // This would use: cmd.args(["group", &multicast_group]);
+        
+        // TODO: Add support for multiple subnets per host
+        // Each host should get its own /24 or /28 subnet to avoid IP conflicts
+        
+        // TODO: Add support for pre-configured MAC mappings to prevent flooding
+        // This would allow specifying MAC-to-underlay-IP mappings upfront
         
         log::debug!("Executing VXLAN creation command: {:?}", cmd);
         
